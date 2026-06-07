@@ -113,6 +113,32 @@ export default class PipOnTop extends Extension
       window._isPipAble = null;
   }
 
+  _isChromiumDocPip(window)
+  {
+    /* Map known Chromium-based browser wm_class values to the suffix
+     * they append to normal window titles (" - <Browser>"). A Document
+     * Picture-in-Picture pop-out keeps the wm_class but lacks that suffix. */
+    const browsers = {
+      'google-chrome': 'Google Chrome',
+      'Google-chrome': 'Google Chrome',
+      'chromium': 'Chromium',
+      'Chromium': 'Chromium',
+      'chromium-browser': 'Chromium',
+      'brave-browser': 'Brave',
+      'Brave-browser': 'Brave',
+      'microsoft-edge': 'Microsoft Edge',
+      'Microsoft-edge': 'Microsoft Edge',
+    };
+
+    let name = browsers[window.get_wm_class()];
+    if (!name)
+      return false;
+
+    /* The bare launcher window (title == browser name) is not a PiP. */
+    return window.title != name
+      && !window.title.endsWith(` - ${name}`);
+  }
+
   _checkTitle(window)
   {
     if (!window.title)
@@ -128,7 +154,12 @@ export default class PipOnTop extends Extension
       /* Telegram support */
       || window.title == 'TelegramDesktop'
       /* Yandex.Browser support YouTube */
-      || window.title.endsWith(' - YouTube'));
+      || window.title.endsWith(' - YouTube')
+      /* Chromium Document Picture-in-Picture support (e.g. ClickUp and
+       * other "pure HTML" pop-outs). Such windows keep the browser
+       * wm_class but, unlike normal browser windows, their title is the
+       * page title without the trailing " - <Browser>" suffix. */
+      || this._isChromiumDocPip(window));
 
     if (isPipWin || window._isPipAble) {
       let un = (isPipWin) ? '' : 'un';
