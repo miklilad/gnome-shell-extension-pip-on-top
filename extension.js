@@ -13,6 +13,7 @@ export default class PipOnTop extends Extension
     this._lastWorkspace = null;
     this._windowAddedId = 0;
     this._windowRemovedId = 0;
+    this._focusFixId = 0;
 
     this.settings = this.getSettings();
     this._settingsChangedId = this.settings.connect(
@@ -30,6 +31,11 @@ export default class PipOnTop extends Extension
 
     global.window_manager.disconnect(this._switchWorkspaceId);
 
+    if (this._focusFixId) {
+      global.compositor.get_laters().remove(this._focusFixId);
+      this._focusFixId = 0;
+    }
+
     if (this._lastWorkspace) {
       this._lastWorkspace.disconnect(this._windowAddedId);
       this._lastWorkspace.disconnect(this._windowRemovedId);
@@ -40,6 +46,7 @@ export default class PipOnTop extends Extension
     this._switchWorkspaceId = 0;
     this._windowAddedId = 0;
     this._windowRemovedId = 0;
+    this._focusFixId = 0;
 
     let actors = global.get_window_actors();
     if (actors) {
@@ -91,6 +98,49 @@ export default class PipOnTop extends Extension
     if (wsWindows) {
       for (let window of wsWindows)
         this._onWindowAdded(workspace, window);
+    }
+
+    /* A PiP window is kept always-on-top, so it is the topmost window
+     * in the stack. With click-to-focus GNOME focuses the topmost
+     * window when switching workspaces, which makes the (sticky) PiP
+     * steal focus. Once focus has settled, hand it back to the real
+     * top window of the workspace. */
+    this._queueFocusFix();
+  }
+
+  _queueFocusFix()
+  {
+    if (this._focusFixId)
+      return;
+
+    let laters = global.compositor.get_laters();
+    this._focusFixId = laters.add(Meta.LaterType.IDLE, () => {
+      this._focusFixId = 0;
+      this._fixStolenFocus();
+      return false;
+    });
+  }
+
+  _fixStolenFocus()
+  {
+    let focus = global.display.get_focus_window();
+    /* Only intervene when an always-on-top PiP grabbed the focus. */
+    if (!focus || !focus._isPipAble || !focus.above)
+      return;
+
+    let workspace = global.workspace_manager.get_active_workspace();
+    let wsWindows = global.display.get_tab_list(Meta.TabList.NORMAL, workspace);
+    if (!wsWindows)
+      return;
+
+    /* Tab list is most-recently-used ordered; focus the top window
+     * that is not a PiP. If there is none, leave the PiP focused. */
+    for (let window of wsWindows) {
+      if (window._isPipAble && window.above)
+        continue;
+
+      window.activate(global.get_current_time());
+      return;
     }
   }
 
@@ -162,14 +212,23 @@ export default class PipOnTop extends Extension
       || this._isChromiumDocPip(window));
 
     if (isPipWin || window._isPipAble) {
-      let un = (isPipWin) ? '' : 'un';
-
       window._isPipAble = true;
-      window[`${un}make_above`]();
+
+      /* Only toggle state when it actually differs from the current one.
+       * Re-calling make_above()/stick() unconditionally raises the window
+       * on every workspace switch, which steals focus from the user. */
+      let shouldBeAbove = isPipWin;
+      if (shouldBeAbove && !window.above)
+        window.make_above();
+      else if (!shouldBeAbove && window.above)
+        window.unmake_above();
 
       /* Change stick if enabled or unstick PipAble windows */
-      un = (isPipWin && this.settings.get_boolean('stick')) ? '' : 'un';
-      window[`${un}stick`]();
+      let shouldStick = isPipWin && this.settings.get_boolean('stick');
+      if (shouldStick && !window.on_all_workspaces)
+        window.stick();
+      else if (!shouldStick && window.on_all_workspaces)
+        window.unstick();
     }
   }
 }
